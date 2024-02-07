@@ -5,6 +5,11 @@ title: "Getting Help and Contributing"
 permalink: /docs/contributing.html
 ---
 
+-----
+
+**2023 Update:** We discuss our plans for the future of Prophet in this blog post: [facebook/prophet in 2023 and beyond](https://medium.com/@cuongduong_35162/facebook-prophet-in-2023-and-beyond-c5086151c138)
+
+-----
 Prophet has a non-fixed release cycle but we will be making bugfixes in response to user feedback and adding features. Please let us know if you encounter a bug by [filing an issue](https://github.com/facebook/prophet/issues). Github issues is also the right place to ask questions about using Prophet.
 
 We appreciate all contributions. If you are planning to contribute back bug-fixes, please do so without any further discussion.
@@ -46,12 +51,10 @@ $ cd python
 # with Anaconda
 $ conda create -n prophet
 $ conda activate prophet
-$ pip install -r requirements.txt
 
 # with venv
 $ python3 -m venv prophet
 $ source prophet/bin/activate
-$ pip install -r requirements.txt
 ```
 
 ### R
@@ -86,7 +89,7 @@ The next step is to build and install the development version of prophet in the 
 ### Python
 
 ```bash
-$ python setup.py develop
+$ python -m pip install -e ".[dev,parallel]"
 ```
 
 You should be able to import *prophet* from your locally built version:
@@ -95,7 +98,7 @@ You should be able to import *prophet* from your locally built version:
 $ python  # start an interpreter
 >>> import prophet
 >>> prophet.__version__
-'1.0'  # whatever the current github version is
+'1.1.2'  # whatever the current github version is
 ```
 
 This will create the new environment, and not touch any of your existing environments,
@@ -154,11 +157,11 @@ Adding tests is one of the most common requests after code is pushed to prophet.
 
 ### Python
 
-Prophet uses the ``unittest`` package for running tests in Python and ``testthat`` package for testing in R. All tests should go into the tests subdirectory in either the Python or R folders.
+Prophet uses the ``pytest`` package for running tests in Python and ``testthat`` package for testing in R. All tests should go into the tests subdirectory in either the Python or R folders.
 
 The entire test suite can be run by typing:
 ```bash
-$ python setup.py test
+$ python -m pytest prophet/tests/
 ```
 
 ### R

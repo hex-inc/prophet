@@ -10,20 +10,25 @@ from collections import OrderedDict
 from copy import deepcopy
 from io import StringIO
 import json
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
 from prophet.forecaster import Prophet
-from prophet import __version__
 
+about = {}
+here = Path(__file__).parent.resolve()
+with open(here / "__version__.py", "r") as f:
+    exec(f.read(), about)
 
 SIMPLE_ATTRIBUTES = [
     'growth', 'n_changepoints', 'specified_changepoints', 'changepoint_range',
     'yearly_seasonality', 'weekly_seasonality', 'daily_seasonality',
     'seasonality_mode', 'seasonality_prior_scale', 'changepoint_prior_scale',
     'holidays_prior_scale', 'mcmc_samples', 'interval_width', 'uncertainty_samples',
-    'y_scale', 'logistic_floor', 'country_holidays', 'component_modes'
+    'y_scale', 'y_min', 'scaling', 'logistic_floor', 'country_holidays', 'component_modes',
+    'holidays_mode'
 ]
 
 PD_SERIES = ['changepoints', 'history_dates', 'train_holiday_names']
@@ -102,7 +107,7 @@ def model_to_dict(model):
     # Params (Dict[str, np.ndarray])
     model_dict['params'] = {k: v.tolist() for k, v in model.params.items()}
     # Attributes that are skipped: stan_fit, stan_backend
-    model_dict['__prophet_version'] = __version__
+    model_dict['__prophet_version'] = about["__version__"]
     return model_dict
 
 
@@ -125,6 +130,16 @@ def model_to_json(model):
     return json.dumps(model_json)
 
 
+def _handle_simple_attributes_backwards_compat(model_dict):
+    """Handle backwards compatibility for SIMPLE_ATTRIBUTES."""
+    # prophet<1.1.5: handle scaling parameters introduced in #2470
+    if 'scaling' not in model_dict:
+        model_dict['scaling'] = 'absmax'
+        model_dict['y_min'] = 0.
+    # prophet<1.1.5: handle holidays_mode parameter introduced in #2477
+    if 'holidays_mode' not in model_dict:
+        model_dict['holidays_mode'] = model_dict['seasonality_mode']
+
 def model_from_dict(model_dict):
     """Recreate a Prophet model from a dictionary.
 
@@ -140,6 +155,7 @@ def model_from_dict(model_dict):
     """
     model = Prophet()  # We will overwrite all attributes set in init anyway
     # Simple types
+    _handle_simple_attributes_backwards_compat(model_dict)
     for attribute in SIMPLE_ATTRIBUTES:
         setattr(model, attribute, model_dict[attribute])
     for attribute in PD_SERIES:
@@ -153,7 +169,7 @@ def model_from_dict(model_dict):
                 s = s.dt.tz_localize(None)
             setattr(model, attribute, s)
     for attribute in PD_TIMESTAMP:
-        setattr(model, attribute, pd.Timestamp.utcfromtimestamp(model_dict[attribute]))
+        setattr(model, attribute, pd.Timestamp.utcfromtimestamp(model_dict[attribute]).tz_localize(None))
     for attribute in PD_TIMEDELTA:
         setattr(model, attribute, pd.Timedelta(seconds=model_dict[attribute]))
     for attribute in PD_DATAFRAME:

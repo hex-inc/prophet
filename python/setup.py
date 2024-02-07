@@ -4,29 +4,30 @@
 # LICENSE file in the root directory of this source tree.
 
 import os
-import sys
 import platform
 from pathlib import Path
 from shutil import copy, copytree, rmtree
 from typing import List
+import tempfile
 
-from pkg_resources import add_activation_listener, normalize_path, require, working_set
 from setuptools import find_packages, setup, Extension
 from setuptools.command.build_ext import build_ext
 from setuptools.command.build_py import build_py
-from setuptools.command.develop import develop
-from setuptools.command.test import test as test_command
+from setuptools.command.editable_wheel import editable_wheel
+from wheel.bdist_wheel import bdist_wheel
 
 
 MODEL_DIR = "stan"
 MODEL_TARGET_DIR = os.path.join("prophet", "stan_model")
 
-CMDSTAN_VERSION = "2.26.1"
+CMDSTAN_VERSION = "2.33.1"
 BINARIES_DIR = "bin"
 BINARIES = ["diagnose", "print", "stanc", "stansummary"]
 TBB_PARENT = "stan/lib/stan_math/lib"
-TBB_DIRS = ["tbb", "tbb_2019_U8"]
+TBB_DIRS = ["tbb", "tbb_2020.3"]
 
+
+IS_WINDOWS = platform.platform().startswith("Win")
 
 def prune_cmdstan(cmdstan_dir: str) -> None:
     """
@@ -52,15 +53,18 @@ def prune_cmdstan(cmdstan_dir: str) -> None:
     rmtree(original_dir)
     temp_dir.rename(original_dir)
 
+
 def repackage_cmdstan():
     return os.environ.get("PROPHET_REPACKAGE_CMDSTAN", "").lower() not in ["false", "0"]
 
 
-def maybe_install_cmdstan_toolchain():
+def maybe_install_cmdstan_toolchain() -> bool:
     """Install C++ compilers required to build stan models on Windows machines."""
     import cmdstanpy
+
     try:
         cmdstanpy.utils.cxx_toolchain_path()
+        return False
     except Exception:
         try:
             from cmdstanpy.install_cxx_toolchain import run_rtools_install
@@ -70,14 +74,14 @@ def maybe_install_cmdstan_toolchain():
 
         run_rtools_install({"version": None, "dir": None, "verbose": True})
         cmdstanpy.utils.cxx_toolchain_path()
-
+        return True
 
 def install_cmdstan_deps(cmdstan_dir: Path):
     import cmdstanpy
     from multiprocessing import cpu_count
 
     if repackage_cmdstan():
-        if platform.platform().startswith("Win"):
+        if IS_WINDOWS:
             maybe_install_cmdstan_toolchain()
         print("Installing cmdstan to", cmdstan_dir)
         if os.path.isdir(cmdstan_dir):
@@ -106,12 +110,24 @@ def build_cmdstan_model(target_dir):
     """
     import cmdstanpy
 
-    cmdstan_dir = (Path(target_dir) / f"cmdstan-{CMDSTAN_VERSION}").resolve()
-    install_cmdstan_deps(cmdstan_dir)
-    model_name = "prophet.stan"
-    target_name = "prophet_model.bin"
-    sm = cmdstanpy.CmdStanModel(stan_file=os.path.join(MODEL_DIR, model_name))
-    copy(sm.exe_file, os.path.join(target_dir, target_name))
+    target_cmdstan_dir = (Path(target_dir) / f"cmdstan-{CMDSTAN_VERSION}").resolve()
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        # long paths on windows can cause problems during build
+        if IS_WINDOWS:
+            cmdstan_dir = (Path(tmp_dir) / f"cmdstan-{CMDSTAN_VERSION}").resolve()
+        else:
+            cmdstan_dir = target_cmdstan_dir
+
+        install_cmdstan_deps(cmdstan_dir)
+        model_name = "prophet.stan"
+        # note: ensure copy target is a directory not a file.
+        temp_stan_file = copy(os.path.join(MODEL_DIR, model_name), cmdstan_dir.parent.resolve())
+        sm = cmdstanpy.CmdStanModel(stan_file=temp_stan_file)
+        target_name = "prophet_model.bin"
+        copy(sm.exe_file, os.path.join(target_dir, target_name))
+
+        if IS_WINDOWS and repackage_cmdstan():
+            copytree(cmdstan_dir, target_cmdstan_dir)
 
     # Clean up
     for f in Path(MODEL_DIR).iterdir():
@@ -119,8 +135,7 @@ def build_cmdstan_model(target_dir):
             os.remove(f)
 
     if repackage_cmdstan():
-        prune_cmdstan(cmdstan_dir)
-
+        prune_cmdstan(target_cmdstan_dir)
 
 
 def get_backends_from_env() -> List[str]:
@@ -128,11 +143,12 @@ def get_backends_from_env() -> List[str]:
 
 
 def build_models(target_dir):
-    print(f"Compiling cmdstanpy model")
+    print("Compiling cmdstanpy model")
     build_cmdstan_model(target_dir)
 
-    if 'PYSTAN' in get_backends_from_env():
+    if "PYSTAN" in get_backends_from_env():
         raise ValueError("PyStan backend is not supported for Prophet >= 1.1")
+
 
 class BuildPyCommand(build_py):
     """Custom build command to pre-compile Stan models."""
@@ -153,112 +169,44 @@ class BuildExtCommand(build_ext):
         pass
 
 
-class DevelopCommand(develop):
+class EditableWheel(editable_wheel):
     """Custom develop command to pre-compile Stan models in-place."""
 
     def run(self):
         if not self.dry_run:
-            target_dir = os.path.join(self.setup_path, MODEL_TARGET_DIR)
+            target_dir = os.path.join(self.project_dir, MODEL_TARGET_DIR)
             self.mkpath(target_dir)
             build_models(target_dir)
 
-        develop.run(self)
+        editable_wheel.run(self)
 
 
-class TestCommand(test_command):
-    user_options = [
-        ("test-module=", "m", "Run 'test_suite' in specified module"),
-        (
-            "test-suite=",
-            "s",
-            "Run single test, case or suite (e.g. 'module.test_suite')",
-        ),
-        ("test-runner=", "r", "Test runner to use"),
-        ("test-slow", "w", "Test slow suites (default off)"),
-    ]
-    test_slow = None
-
-    def initialize_options(self):
-        super(TestCommand, self).initialize_options()
-        self.test_slow = False
-
+class BDistWheelABINone(bdist_wheel):
     def finalize_options(self):
-        super(TestCommand, self).finalize_options()
-        if self.test_slow is None:
-            self.test_slow = getattr(self.distribution, "test_slow", False)
+        bdist_wheel.finalize_options(self)
+        self.root_is_pure = False
 
-    """We must run tests on the build directory, not source."""
-
-    def with_project_on_sys_path(self, func):
-        # Ensure metadata is up-to-date
-        self.reinitialize_command("build_py", inplace=0)
-        self.run_command("build_py")
-        bpy_cmd = self.get_finalized_command("build_py")
-        build_path = normalize_path(bpy_cmd.build_lib)
-
-        # Build extensions
-        self.reinitialize_command("egg_info", egg_base=build_path)
-        self.run_command("egg_info")
-
-        self.reinitialize_command("build_ext", inplace=0)
-        self.run_command("build_ext")
-
-        ei_cmd = self.get_finalized_command("egg_info")
-
-        old_path = sys.path[:]
-        old_modules = sys.modules.copy()
-
-        try:
-            sys.path.insert(0, normalize_path(ei_cmd.egg_base))
-            working_set.__init__()
-            add_activation_listener(lambda dist: dist.activate())
-            require("%s==%s" % (ei_cmd.egg_name, ei_cmd.egg_version))
-            func()
-        finally:
-            sys.path[:] = old_path
-            sys.modules.clear()
-            sys.modules.update(old_modules)
-            working_set.__init__()
+    def get_tag(self):
+        _, _, plat = bdist_wheel.get_tag(self)
+        return "py3", "none", plat
 
 
-with open("README.md", "r", encoding="utf-8") as f:
-    long_description = f.read()
-
-with open("requirements.txt", "r") as f:
-    install_requires = f.read().splitlines()
+about = {}
+here = Path(__file__).parent.resolve()
+with open(here / "prophet" / "__version__.py", "r") as f:
+    exec(f.read(), about)
 
 setup(
-    name="prophet",
-    version="1.1",
-    description="Automatic Forecasting Procedure",
-    url="https://facebook.github.io/prophet/",
-    project_urls={
-        "Source": "https://github.com/facebook/prophet",
-    },
-    author="Sean J. Taylor <sjtz@pm.me>, Ben Letham <bletham@fb.com>",
-    author_email="sjtz@pm.me",
-    license="MIT",
+    version=about["__version__"],
     packages=find_packages(),
-    install_requires=install_requires,
-    python_requires=">=3.7",
     zip_safe=False,
     include_package_data=True,
     ext_modules=[Extension("prophet.stan_model", [])],
     cmdclass={
         "build_ext": BuildExtCommand,
         "build_py": BuildPyCommand,
-        "develop": DevelopCommand,
-        "test": TestCommand,
+        "editable_wheel": EditableWheel,
+        "bdist_wheel": BDistWheelABINone,
     },
     test_suite="prophet.tests",
-    classifiers=[
-        "Programming Language :: Python",
-        "Programming Language :: Python :: 3",
-        "Programming Language :: Python :: 3.7",
-        "Programming Language :: Python :: 3.8",
-        "Programming Language :: Python :: 3.9",
-        "Programming Language :: Python :: 3.10",
-    ],
-    long_description=long_description,
-    long_description_content_type="text/markdown",
 )

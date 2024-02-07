@@ -63,6 +63,7 @@ def plot(
     -------
     A matplotlib figure.
     """
+    user_provided_ax = False if ax is None else True
     if ax is None:
         fig = plt.figure(facecolor='w', figsize=figsize)
         ax = fig.add_subplot(111)
@@ -89,7 +90,8 @@ def plot(
     ax.set_ylabel(ylabel)
     if include_legend:
         ax.legend()
-    fig.tight_layout()
+    if not user_provided_ax:
+        fig.tight_layout()
     return fig
 
 
@@ -541,8 +543,8 @@ def plot_cross_validation_metric(
         if np.timedelta64(1, dt) < np.timedelta64(tick_w, 'ns'):
             break
 
-    x_plt = df_none['horizon'].astype('timedelta64[ns]').astype(np.int64) / float(dt_conversions[i])
-    x_plt_h = df_h['horizon'].astype('timedelta64[ns]').astype(np.int64) / float(dt_conversions[i])
+    x_plt = df_none['horizon'].astype('timedelta64[ns]').view(np.int64) / float(dt_conversions[i])
+    x_plt_h = df_h['horizon'].astype('timedelta64[ns]').view(np.int64) / float(dt_conversions[i])
 
     ax.plot(x_plt, df_none[metric], '.', alpha=0.1, c=point_color)
     ax.plot(x_plt_h, df_h[metric], '-', c=color)
@@ -867,7 +869,7 @@ def get_forecast_component_plotly_props(m, fcst, name, uncertainty=True, plot_ca
         holiday_features.columns = holiday_features.columns.str.replace('_delim_', '', regex=False)
         holiday_features.columns = holiday_features.columns.str.replace('+0', '', regex=False)
         text = pd.Series(data='', index=holiday_features.index)
-        for holiday_feature, idxs in holiday_features.iteritems():
+        for holiday_feature, idxs in holiday_features.items():
             text[idxs.astype(bool) & (text != '')] += '<br>'  # Add newline if additional holiday
             text[idxs.astype(bool)] += holiday_feature
 
